@@ -298,11 +298,16 @@ export class LinkedInCrawler {
         return { companies, debugInfo };
       }
 
-      companyCards.forEach((card) => {
+      companyCards.forEach((card, cardIndex) => {
         try {
           // Try multiple strategies to find company name and link
           let nameElement: Element | null = null;
           let linkElement: HTMLAnchorElement | null = null;
+          
+          // Debug: Log what we're working with
+          const cardHTML = card.outerHTML.substring(0, 200);
+          console.log(`\n--- Card ${cardIndex + 1} ---`);
+          console.log(`Card HTML sample: ${cardHTML}...`);
 
           // Strategy 1: Original approach
           nameElement = card.querySelector('a[data-test-app-aware-link] span[aria-hidden="true"]');
@@ -333,9 +338,53 @@ export class LinkedInCrawler {
             }
           }
 
+          // Strategy 4: Specific handling for [data-chameleon-result-urn] cards
+          if (!nameElement || !linkElement) {
+            // Look for any anchor tag within the chameleon result
+            const allAnchors = Array.from(card.querySelectorAll('a'));
+            for (const anchor of allAnchors) {
+              if (anchor.href?.includes('/company/') || anchor.href?.includes('/school/')) {
+                linkElement = anchor as HTMLAnchorElement;
+                // Try to find the company name in various ways
+                const possibleNameElements = [
+                  anchor.querySelector('span[aria-hidden="true"]'),
+                  anchor.querySelector('.entity-result__title-text span'),
+                  anchor.querySelector('[data-anonymize="company-name"]'),
+                  anchor.querySelector('span'),
+                  anchor
+                ];
+                
+                for (const elem of possibleNameElements) {
+                  if (elem?.textContent?.trim()) {
+                    nameElement = elem;
+                    break;
+                  }
+                }
+                break;
+              }
+            }
+          }
+
+          // Strategy 5: Even more generic - find any meaningful link
+          if (!nameElement || !linkElement) {
+            const allLinks = Array.from(card.querySelectorAll('a[href]')) as HTMLAnchorElement[];
+            for (const link of allLinks) {
+              const href = link.href;
+              if (href && (href.includes('linkedin.com') && !href.includes('/in/') && !href.includes('/posts/'))) {
+                linkElement = link;
+                nameElement = link.querySelector('*') || link;
+                break;
+              }
+            }
+          }
+
+          console.log(`Strategy results: nameElement=${nameElement?.tagName}, linkElement=${linkElement?.href}`);
+          
           if (nameElement && linkElement) {
             const name = nameElement.textContent?.trim() || '';
             const linkedinUrl = linkElement.href;
+            
+            console.log(`✅ Extracted: "${name}" -> ${linkedinUrl}`);
             
             // Extract other information with fallback selectors
             const logoElement = card.querySelector('img') as HTMLImageElement;
@@ -357,6 +406,8 @@ export class LinkedInCrawler {
                 connectionInfo
               });
             }
+          } else {
+            console.log(`❌ No valid extraction for Card ${cardIndex + 1}`);
           }
         } catch {
           // Silently continue if extraction fails for this card
