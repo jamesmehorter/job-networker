@@ -1,12 +1,20 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { CrawlSession, Connection, Company, CompanyConnection } from '@/types';
 
 class DatabaseManager {
   private db: Database.Database;
 
   constructor() {
-    const dbPath = path.join(process.cwd(), 'data', 'linkedin-networker.db');
+    const dataDir = path.join(process.cwd(), 'data');
+    const dbPath = path.join(dataDir, 'linkedin-networker.db');
+    
+    // Ensure data directory exists
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    
     this.db = new Database(dbPath);
     this.initTables();
   }

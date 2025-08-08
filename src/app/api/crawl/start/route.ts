@@ -96,10 +96,13 @@ async function startCrawlProcess(
     });
 
   } catch (error) {
-    console.error(`Crawl failed for session ${sessionId}:`, error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error(`Crawl failed for session ${sessionId}:`, errorMessage);
+    console.error('Full error object:', error);
+    
     db.updateCrawlSession(sessionId, { 
       status: 'failed', 
-      error: error instanceof Error ? error.message : 'Unknown error'
+      error: errorMessage
     });
   } finally {
     // Clean up

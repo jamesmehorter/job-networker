@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Trash2, Calendar, Users, Building, Play, AlertCircle } from 'lucide-react';
+import { Trash2, Calendar, Users, Building, Play, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react';
 import { CrawlSession } from '@/types';
 
 interface CrawlHistoryProps {
@@ -20,6 +20,7 @@ export default function CrawlHistory({
   const [sessions, setSessions] = useState<CrawlSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetchSessions();
@@ -90,6 +91,18 @@ export default function CrawlHistory({
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit'
+    });
+  };
+
+  const toggleErrorExpansion = (sessionId: string) => {
+    setExpandedErrors(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(sessionId)) {
+        newSet.delete(sessionId);
+      } else {
+        newSet.add(sessionId);
+      }
+      return newSet;
     });
   };
 
@@ -199,11 +212,29 @@ export default function CrawlHistory({
                   )}
                   
                   {session.status === 'failed' && session.error && (
-                    <div className="flex items-center gap-1 text-red-600 text-sm">
-                      <AlertCircle className="h-4 w-4" />
-                      <span className="max-w-48 truncate" title={session.error}>
-                        {session.error}
-                      </span>
+                    <div className="text-red-600 text-sm">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleErrorExpansion(session.id);
+                        }}
+                        className="flex items-center gap-1 hover:text-red-700 transition-colors"
+                      >
+                        <AlertCircle className="h-4 w-4" />
+                        {expandedErrors.has(session.id) ? (
+                          <ChevronDown className="h-3 w-3" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3" />
+                        )}
+                        <span className={expandedErrors.has(session.id) ? '' : 'max-w-48 truncate'}>
+                          {expandedErrors.has(session.id) ? 'Error Details' : session.error}
+                        </span>
+                      </button>
+                      {expandedErrors.has(session.id) && (
+                        <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-xs font-mono text-red-800 whitespace-pre-wrap">
+                          {session.error}
+                        </div>
+                      )}
                     </div>
                   )}
 

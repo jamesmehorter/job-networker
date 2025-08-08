@@ -38,21 +38,32 @@ export class LinkedInCrawler {
     if (!this.page) throw new Error('Crawler not initialized');
 
     try {
-      await this.page.goto('https://www.linkedin.com/login');
+      console.log('Navigating to LinkedIn login page...');
+      await this.page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' });
       await this.wait(2000);
 
+      // Wait for login form to be visible
+      await this.page.waitForSelector('#username', { timeout: 10000 });
+      await this.page.waitForSelector('#password', { timeout: 10000 });
+
+      console.log('Filling login credentials...');
       // Fill login form
       await this.page.fill('#username', credentials.email);
       await this.page.fill('#password', credentials.password);
       
-      // Click login button
-      await this.page.click('button[type="submit"]');
+      // Click login button and wait for navigation
+      console.log('Clicking login button...');
+      await Promise.all([
+        this.page.waitForNavigation({ timeout: 20000 }),
+        this.page.click('button[type="submit"]')
+      ]);
       
-      // Wait for navigation and check if login was successful
-      await this.page.waitForLoadState('networkidle', { timeout: 15000 });
+      // Additional wait for page to stabilize
+      await this.wait(3000);
       
       // Check for various possible outcomes
       const currentUrl = this.page.url();
+      console.log('Current URL after login attempt:', currentUrl);
       
       if (currentUrl.includes('/challenge')) {
         throw new Error('LinkedIn security challenge required. Please login manually first.');
@@ -64,14 +75,23 @@ export class LinkedInCrawler {
       
       // Check if we're on the feed or any LinkedIn authenticated page
       if (currentUrl.includes('linkedin.com/feed') || 
-          currentUrl.includes('linkedin.com/in/') ||
-          await this.page.locator('[data-test-app-aware-link]').count() > 0) {
+          currentUrl.includes('linkedin.com/in/')) {
+        console.log('Login successful!');
         return true;
       }
       
-      throw new Error('Login status unclear. Please check your credentials.');
+      // Check for navigation header as fallback
+      const navExists = await this.page.locator('nav[aria-label="Primary Navigation"]').count() > 0;
+      if (navExists) {
+        console.log('Login successful (detected nav)!');
+        return true;
+      }
+      
+      throw new Error(`Login status unclear. Current URL: ${currentUrl}`);
     } catch (error) {
-      throw new Error(`Login failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error('Login error details:', errorMessage);
+      throw new Error(`Login failed: ${errorMessage}`);
     }
   }
 

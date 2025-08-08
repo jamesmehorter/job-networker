@@ -1,18 +1,36 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { LinkedInCredentials, OpenAIConfig, CrawlSession } from '@/types';
 import AuthManager from '@/components/auth/AuthManager';
 import CrawlHistory from '@/components/crawl/CrawlHistory';
 import ConnectionsList from '@/components/connections/ConnectionsList';
 import CrawlSettings from '@/components/crawl/CrawlSettings';
 import { Network, Settings } from 'lucide-react';
+import { StorageManager } from '@/lib/storage';
 
 export default function Home() {
   const [credentials, setCredentials] = useState<LinkedInCredentials | null>(null);
   const [, setOpenAIConfig] = useState<OpenAIConfig | null>(null);
   const [selectedSession, setSelectedSession] = useState<CrawlSession | null>(null);
   const [activeTab, setActiveTab] = useState<'connections' | 'settings'>('connections');
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  // Load credentials from localStorage on mount
+  useEffect(() => {
+    const storedCredentials = StorageManager.getLinkedInCredentials();
+    const storedOpenAI = StorageManager.getOpenAIConfig();
+    
+    if (storedCredentials) {
+      setCredentials(storedCredentials);
+    }
+    
+    if (storedOpenAI) {
+      setOpenAIConfig(storedOpenAI);
+    }
+    
+    setIsLoaded(true);
+  }, []);
 
   const handleStartCrawl = async (mode: 'first_connections' | 'friends_of_friends') => {
     if (!credentials) {
@@ -59,7 +77,16 @@ export default function Home() {
     }
   };
 
-  const isConfigured = credentials && credentials.email && credentials.password;
+  const isConfigured = isLoaded && credentials && credentials.email && credentials.password;
+
+  // Show loading state while checking localStorage
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -107,6 +134,7 @@ export default function Home() {
             <CrawlSettings />
           </div>
         ) : (
+          // Connections tab
           <>
             {!isConfigured ? (
               <div className="text-center py-12">
