@@ -101,40 +101,79 @@ export class LinkedInCrawler {
   ): Promise<void> {
     if (!this.page) throw new Error('Crawler not initialized');
 
+    console.log('=== Starting First Degree Connections Crawl ===');
     progressCallback(0, 'Starting first degree connections crawl...');
 
     try {
       // Navigate to the companies search page with first-degree network filter
       const searchUrl = 'https://www.linkedin.com/search/results/companies/?network=%5B%22F%22%5D&origin=FACETED_SEARCH';
-      await this.page.goto(searchUrl);
-      await this.wait(3000);
+      console.log('Navigating to:', searchUrl);
+      
+      await this.page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+      await this.wait(5000); // Increased wait time
 
+      console.log('Current URL after navigation:', this.page.url());
       progressCallback(10, 'Loading company results...');
 
+      // Check if we're on the right page or if LinkedIn redirected us
+      const currentUrl = this.page.url();
+      if (!currentUrl.includes('/search/results/companies')) {
+        console.warn('LinkedIn may have redirected us. Current URL:', currentUrl);
+        
+        // Try alternative approach - go to companies tab manually
+        console.log('Trying alternative navigation...');
+        await this.page.goto('https://www.linkedin.com/search/results/all/?keywords=*&origin=GLOBAL_SEARCH_HEADER');
+        await this.wait(3000);
+        
+        // Look for companies filter/tab
+        try {
+          await this.page.click('button[aria-label*="Companies"], a[href*="companies"]');
+          await this.wait(3000);
+        } catch (filterError) {
+          console.warn('Could not find companies filter:', filterError);
+        }
+      }
+
       // Scroll to load more results
+      console.log('Scrolling to load more results...');
       await this.scrollToLoadResults();
       
       progressCallback(30, 'Extracting company data...');
 
       // Extract company information
+      console.log('Starting company extraction...');
       const companies = await this.extractCompaniesFromSearch();
       
+      console.log(`=== Extraction Complete: Found ${companies.length} companies ===`);
       progressCallback(60, `Found ${companies.length} companies. Processing connections...`);
+
+      if (companies.length === 0) {
+        console.warn('No companies found! This might indicate:');
+        console.warn('1. LinkedIn changed their UI/selectors');
+        console.warn('2. You have no 1st degree connections at companies');
+        console.warn('3. LinkedIn is blocking the search');
+        console.warn('4. You need to adjust search filters manually');
+      }
 
       // Process each company and its connections
       let processedCount = 0;
       for (const company of companies) {
+        console.log(`Processing company ${processedCount + 1}/${companies.length}: ${company.name}`);
         await this.processCompanyConnections(sessionId, company);
         processedCount++;
         
-        const progress = 60 + (processedCount / companies.length) * 35;
+        const progress = 60 + (processedCount / Math.max(companies.length, 1)) * 35;
         progressCallback(progress, `Processed ${processedCount}/${companies.length} companies`);
         
-        await this.wait(this.settings.rateLimit);
+        if (processedCount < companies.length) {
+          await this.wait(this.settings.rateLimit);
+        }
       }
 
+      console.log('=== Crawl Complete ===');
       progressCallback(100, `Completed! Found connections at ${companies.length} companies.`);
     } catch (error) {
+      console.error('First degree crawl error:', error);
       throw new Error(`First degree crawl failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -197,26 +236,117 @@ export class LinkedInCrawler {
   private async extractCompaniesFromSearch(): Promise<Array<Company & { connectionInfo: string }>> {
     if (!this.page) return [];
 
-    return await this.page.evaluate(() => {
+    // Add debugging to see what's on the page
+    console.log('Extracting companies from search results page...');
+    console.log('Current URL:', this.page.url());
+    
+    // Wait for content to load
+    await this.wait(5000);
+
+    // First check what's actually on the page from Node.js side
+    const pageTitle = await this.page.title();
+    const currentUrl = await this.page.url();
+    console.log('Page title from Node.js:', pageTitle);
+    console.log('Current URL from Node.js:', currentUrl);
+
+    const result = await this.page.evaluate(() => {
       const companies: Array<Company & { connectionInfo: string }> = [];
-      const companyCards = document.querySelectorAll('[data-test-result-container]');
+      const debugInfo = {
+        usedSelector: '',
+        selectorResults: [] as Array<{ selector: string; count: number }>,
+        pageTitle: document.title
+      };
+      
+      // Try multiple selector strategies as LinkedIn changes their HTML frequently
+      const possibleSelectors = [
+        '[data-test-result-container]', // Original selector
+        '.reusable-search__result-container', // Alternative selector
+        '.search-result__wrapper', // Another common pattern
+        '.entity-result', // Generic entity result
+        '[data-chameleon-result-urn]', // URN-based results
+        'li[data-row]', // List items with data-row
+        '.search-results li', // Simple list approach
+        '.org-company-card', // Company card specific
+        '.search-results__list li', // More specific list approach
+        '[data-control-name="search_srp_result"]', // Control name based
+        '.app-aware-link', // App aware link containers
+        'div[data-view-name="search-entity-result"]', // View name based
+        '.artdeco-entity-lockup', // Artdeco framework components
+        '.org-top-card-primary-content__entities li', // Org card entities
+        'li.reusable-search__result-container', // Combined approach
+      ];
+
+      // Record results for all selectors
+      debugInfo.selectorResults = possibleSelectors.map(s => ({
+        selector: s,
+        count: document.querySelectorAll(s).length
+      }));
+
+      let companyCards: NodeListOf<Element> | null = null;
+
+      // Find the selector that actually returns results
+      for (const selector of possibleSelectors) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+          companyCards = elements;
+          debugInfo.usedSelector = selector;
+          break;
+        }
+      }
+
+      if (!companyCards) {
+        return { companies, debugInfo };
+      }
 
       companyCards.forEach((card) => {
         try {
-          const nameElement = card.querySelector('a[data-test-app-aware-link] span[aria-hidden="true"]');
-          const linkElement = card.querySelector('a[data-test-app-aware-link]') as HTMLAnchorElement;
-          const logoElement = card.querySelector('img') as HTMLImageElement;
-          const descriptionElement = card.querySelector('[data-test-entity-subtitle]');
-          const connectionElement = card.querySelector('[data-test-entity-context]');
+          // Try multiple strategies to find company name and link
+          let nameElement: Element | null = null;
+          let linkElement: HTMLAnchorElement | null = null;
+
+          // Strategy 1: Original approach
+          nameElement = card.querySelector('a[data-test-app-aware-link] span[aria-hidden="true"]');
+          linkElement = card.querySelector('a[data-test-app-aware-link]') as HTMLAnchorElement;
+
+          // Strategy 2: More generic approach
+          if (!nameElement || !linkElement) {
+            const allLinks = Array.from(card.querySelectorAll('a'));
+            for (const link of allLinks) {
+              if (link.href?.includes('/company/')) {
+                linkElement = link as HTMLAnchorElement;
+                nameElement = link.querySelector('span') || link;
+                break;
+              }
+            }
+          }
+
+          // Strategy 3: Look for any link with company-like text
+          if (!nameElement || !linkElement) {
+            const headings = Array.from(card.querySelectorAll('h3, h4, .entity-result__title-text, [data-test-result-title]'));
+            for (const heading of headings) {
+              const link = heading.querySelector('a') || (heading as HTMLAnchorElement);
+              if (link?.href) {
+                linkElement = link as HTMLAnchorElement;
+                nameElement = heading;
+                break;
+              }
+            }
+          }
 
           if (nameElement && linkElement) {
             const name = nameElement.textContent?.trim() || '';
             const linkedinUrl = linkElement.href;
+            
+            // Extract other information with fallback selectors
+            const logoElement = card.querySelector('img') as HTMLImageElement;
+            const descriptionElement = card.querySelector('[data-test-entity-subtitle], .entity-result__summary, .search-result__info .subline-level-1');
+            const connectionElement = card.querySelector('[data-test-entity-context], .entity-result__context, .search-result__info .subline-level-2');
+
             const logoUrl = logoElement?.src || '';
             const description = descriptionElement?.textContent?.trim() || '';
             const connectionInfo = connectionElement?.textContent?.trim() || '';
 
-            if (name && linkedinUrl) {
+            if (name && linkedinUrl && linkedinUrl.includes('linkedin.com')) {
               companies.push({
                 id: '',
                 name,
@@ -228,13 +358,34 @@ export class LinkedInCrawler {
               });
             }
           }
-        } catch (error) {
-          console.warn('Error extracting company data:', error);
+        } catch {
+          // Silently continue if extraction fails for this card
         }
       });
 
-      return companies;
+      return { companies, debugInfo };
     });
+
+    console.log(`\n=== EXTRACTION RESULTS ===`);
+    console.log(`Page title: ${result.debugInfo.pageTitle}`);
+    console.log(`Selector test results:`);
+    result.debugInfo.selectorResults.forEach(r => {
+      console.log(`  "${r.selector}": found ${r.count} elements`);
+    });
+
+    if (result.debugInfo.usedSelector) {
+      console.log(`✅ Successfully used selector: "${result.debugInfo.usedSelector}"`);
+      console.log(`✅ Found ${result.companies.length} companies`);
+    } else {
+      console.log(`❌ No working selector found!`);
+      
+      // Get a sample of the page HTML to debug
+      const bodyHTML = await this.page.evaluate(() => document.body.innerHTML.substring(0, 2000));
+      console.log('Page HTML sample:', bodyHTML);
+    }
+    console.log(`=========================\n`);
+
+    return result.companies;
   }
 
   private async extractDirectConnections(): Promise<Connection[]> {
@@ -277,37 +428,65 @@ export class LinkedInCrawler {
   }
 
   private async processCompanyConnections(sessionId: string, company: Company & { connectionInfo: string }): Promise<void> {
-    // Create or get company record
-    const existingCompany = this.db.getCompanyByLinkedInUrl(company.linkedinUrl);
-    let companyId: string;
+    console.log(`Processing company: ${company.name} (${company.linkedinUrl})`);
+    console.log(`Connection info: "${company.connectionInfo}"`);
     
-    if (existingCompany) {
-      companyId = existingCompany.id;
-    } else {
-      companyId = this.db.createCompany({
-        name: company.name,
-        linkedinUrl: company.linkedinUrl,
-        logoUrl: company.logoUrl,
-        description: company.description
+    try {
+      // Create or get company record
+      const existingCompany = this.db.getCompanyByLinkedInUrl(company.linkedinUrl);
+      let companyId: string;
+      
+      if (existingCompany) {
+        console.log(`Company already exists in DB: ${existingCompany.name}`);
+        companyId = existingCompany.id;
+      } else {
+        console.log(`Creating new company record: ${company.name}`);
+        companyId = this.db.createCompany({
+          name: company.name,
+          linkedinUrl: company.linkedinUrl,
+          logoUrl: company.logoUrl,
+          description: company.description
+        });
+        console.log(`Created company with ID: ${companyId}`);
+      }
+
+      // Extract connection name from connectionInfo if possible
+      let connectionName = 'Direct Connection';
+      if (company.connectionInfo) {
+        // Try to parse connection info like "John Smith works here" or "2 connections work here"
+        const nameMatch = company.connectionInfo.match(/^([^•]+?)(?:\s+(?:works?|work)\s+here|•|$)/i);
+        if (nameMatch && nameMatch[1] && !nameMatch[1].includes('connection')) {
+          connectionName = nameMatch[1].trim();
+        }
+      }
+      
+      console.log(`Creating connection record: ${connectionName}`);
+
+      // Create a connection record based on the search result
+      const connectionId = this.db.createConnection({
+        crawlSessionId: sessionId,
+        name: connectionName,
+        headline: company.connectionInfo,
+        profileUrl: '', // We don't have individual profile URLs from company search
+        connectionDegree: 1,
+        company: company.name,
+        companyUrl: company.linkedinUrl
       });
+      console.log(`Created connection with ID: ${connectionId}`);
+
+      // Link the company and connection
+      const companyConnectionId = this.db.createCompanyConnection({
+        companyId,
+        connectionId,
+        crawlSessionId: sessionId,
+        connectionPath: `You -> ${connectionName} works here`
+      });
+      console.log(`Created company-connection link with ID: ${companyConnectionId}`);
+      
+    } catch (error) {
+      console.error(`Error processing company connections for ${company.name}:`, error);
+      throw error;
     }
-
-    // Create a placeholder connection based on the search result
-    const connectionId = this.db.createConnection({
-      crawlSessionId: sessionId,
-      name: 'Direct Connection', // This would need to be extracted from the connection info
-      headline: company.connectionInfo,
-      profileUrl: '',
-      connectionDegree: 1
-    });
-
-    // Link the company and connection
-    this.db.createCompanyConnection({
-      companyId,
-      connectionId,
-      crawlSessionId: sessionId,
-      connectionPath: 'You -> [Connection Name] works here'
-    });
   }
 
   private async analyzeFriendNetwork(sessionId: string, connection: Connection): Promise<void> {

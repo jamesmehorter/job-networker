@@ -9,13 +9,15 @@ interface CrawlHistoryProps {
   onDeleteSession: (sessionId: string) => void;
   onStartNewCrawl: (mode: 'first_connections' | 'friends_of_friends') => void;
   selectedSessionId?: string;
+  refreshTrigger?: number;
 }
 
 export default function CrawlHistory({ 
   onSelectSession, 
   onDeleteSession, 
   onStartNewCrawl, 
-  selectedSessionId 
+  selectedSessionId,
+  refreshTrigger 
 }: CrawlHistoryProps) {
   const [sessions, setSessions] = useState<CrawlSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,7 +26,22 @@ export default function CrawlHistory({
 
   useEffect(() => {
     fetchSessions();
-  }, []);
+  }, [refreshTrigger]);
+
+  useEffect(() => {
+    // Set up polling for active sessions
+    const interval = setInterval(() => {
+      const hasRunningSessions = sessions.some(s => s.status === 'running' || s.status === 'pending');
+      if (hasRunningSessions) {
+        console.log('Polling for active sessions...');
+        fetchSessions();
+      } else {
+        console.log('No active sessions, stopping polling');
+      }
+    }, 3000); // Poll every 3 seconds
+
+    return () => clearInterval(interval);
+  }, [sessions]); // Separate effect for polling
 
   const fetchSessions = async () => {
     try {
@@ -203,11 +220,12 @@ export default function CrawlHistory({
                     <div className="flex items-center gap-2">
                       <div className="w-32 bg-gray-200 rounded-full h-2">
                         <div
-                          className="bg-blue-600 h-2 rounded-full transition-all"
+                          className="bg-blue-600 h-2 rounded-full transition-all animate-pulse"
                           style={{ width: `${session.progress}%` }}
                         ></div>
                       </div>
                       <span className="text-sm text-gray-600">{session.progress}%</span>
+                      <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600"></div>
                     </div>
                   )}
                   

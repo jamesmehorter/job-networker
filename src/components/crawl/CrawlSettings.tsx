@@ -8,7 +8,7 @@ import { StorageManager } from '@/lib/storage';
 export default function CrawlSettings() {
   const [settings, setSettings] = useState<CrawlSettings>({
     rateLimit: 2500,
-    headless: true
+    headless: false // Set to false for debugging
   });
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSaving, setIsSaving] = useState(false);

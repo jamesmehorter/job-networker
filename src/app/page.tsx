@@ -15,6 +15,7 @@ export default function Home() {
   const [selectedSession, setSelectedSession] = useState<CrawlSession | null>(null);
   const [activeTab, setActiveTab] = useState<'connections' | 'settings'>('connections');
   const [isLoaded, setIsLoaded] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   // Load credentials from localStorage on mount
   useEffect(() => {
@@ -63,8 +64,8 @@ export default function Home() {
         throw new Error('Failed to start crawl');
       }
 
-      // Refresh the sessions list by triggering a re-render
-      window.location.reload();
+      // Trigger refresh of sessions list
+      setRefreshTrigger(prev => prev + 1);
     } catch (error) {
       console.error('Error starting crawl:', error);
       alert(`Failed to start crawl: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -163,6 +164,7 @@ export default function Home() {
                     onDeleteSession={handleDeleteSession}
                     onStartNewCrawl={handleStartCrawl}
                     selectedSessionId={selectedSession?.id}
+                    refreshTrigger={refreshTrigger}
                   />
                 </div>
                 <div>
