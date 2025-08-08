@@ -1,0 +1,55 @@
+Create a LinkedIn job connection finder app based on the below specifications.
+
+The ultimate end goal is to be able to write a letter to a 1st degree connection and say one of two things:
+1) "Hey Jerry, I'm interest in/applied to your company for X position. Any chance you could grease the wheels to get me seen?"
+2) "Hey Joe, I noticed your connection, Tom works at X, and they are hiring for a role that I am interested in/applied to. Would you be willing to make an introduction?"
+
+OVERVIEW:
+Build a Next.js app
+* has a UI to enter linkedin username/password (and text explaining its stored securely)
+* has a UI to enter Open API key (and text explaining how/where to get it)
+* has a UI displaying a list of companies (displayed from crawl results detailed below)
+	* shows company name, icon, brief description, link to company on LinkedIn
+	* shows a visual of how connected to me, e.g. "You -> Joe works here" or "You -> Joe -> Tom works here",
+
+Playwright crawler
+* 1st Connections
+	* visit linkedin.com, login using given credentials
+		* visit https://www.linkedin.com/search/results/companies/?network=%5B%22F%22%5D&origin=FACETED_SEARCH&sid=NDN (this page show a list of companies where one of my 1st degree connections or someone from my school is working
+* 1st of 1st Connections
+	* visit linkedin.com, login using given credentials
+		* crawl the logged-in user's LinkedIn 1st degree connections
+			* find their 1st degree connections
+				* find where their connections work (i.e. friends of friends)
+* both modes above should save similar data points to a database (to use for display to the above UI) and if needed, utilize AI for extracting the data? A longer term goal will be to locate job postings at the located companies
+
+Below is the tech stack initially recommended by Claude chat
+
+Maybe store crawl data by the date it was crawled on, UI to purge the stored data.
+
+TECH STACK:
+- Next.js 14 with TypeScript and Tailwind
+- Playwright for LinkedIn automation
+- SQLite with better-sqlite3
+- OpenAI GPT-4o-mini for job analysis
+- React components with Lucide icons
+
+KEY FEATURES:
+1. Auth form for OpenAI API key + LinkedIn credentials (stored in localStorage)
+2. Playwright crawler that logs into LinkedIn, gets connections, finds their companies
+3. Job scraper that hits company career pages for remote engineering roles
+4. AI analysis to score job relevance (React, TypeScript, Node.js, GraphQL matches)
+5. UI to view crawl history, select connections, browse job results
+6. Configurable rate limiting (2.5s default between requests)
+
+CORE COMPONENTS NEEDED:
+- AuthManager.tsx (credentials form with localStorage)
+- CrawlHistory.tsx (view past crawls, delete sessions)
+- CrawlSettings.tsx (rate limiting, AI provider config)
+- ConnectionsList.tsx (select which connections to process)
+- JobResults.tsx (display matched jobs with connection paths)
+- LinkedIn crawler class with Playwright automation
+- Database schema with crawl sessions, connections, jobs tables
+- API routes for crawl control, data management
+
+The app should be shareable - friends can clone repo, add their own API keys, and run locally. Focus on privacy-first design where all data stays on user's device.
