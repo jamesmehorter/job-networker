@@ -29,19 +29,24 @@ export default function CrawlHistory({
   }, [refreshTrigger]);
 
   useEffect(() => {
-    // Set up polling for active sessions
-    const interval = setInterval(() => {
-      const hasRunningSessions = sessions.some(s => s.status === 'running' || s.status === 'pending');
-      if (hasRunningSessions) {
-        console.log('Polling for active sessions...');
-        fetchSessions();
-      } else {
-        console.log('No active sessions, stopping polling');
-      }
-    }, 3000); // Poll every 3 seconds
+    // Set up polling only when we have active sessions
+    const hasActiveSessions = sessions.some(s => s.status === 'running' || s.status === 'pending');
+    
+    if (!hasActiveSessions) {
+      return; // No interval needed if no active sessions
+    }
 
-    return () => clearInterval(interval);
-  }, [sessions]); // Separate effect for polling
+    console.log('Setting up polling for running sessions');
+    const interval = setInterval(() => {
+      console.log('Polling for session updates');
+      fetchSessions();
+    }, 3000);
+    
+    return () => {
+      console.log('Clearing polling interval');
+      clearInterval(interval);
+    };
+  }, [sessions.filter(s => s.status === 'running' || s.status === 'pending').length]); // Only re-run when number of active sessions changes
 
   const fetchSessions = async () => {
     try {

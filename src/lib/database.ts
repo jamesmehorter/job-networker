@@ -20,6 +20,9 @@ class DatabaseManager {
   }
 
   private initTables() {
+    // Run migrations first
+    this.runMigrations();
+    
     // Create crawl_sessions table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS crawl_sessions (
@@ -42,6 +45,8 @@ class DatabaseManager {
         name TEXT NOT NULL,
         headline TEXT,
         profile_url TEXT NOT NULL,
+        profile_image_url TEXT,
+        connection_source TEXT,
         company TEXT,
         company_url TEXT,
         company_logo_url TEXT,
@@ -91,6 +96,34 @@ class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_company_connections_session ON company_connections(crawl_session_id);
       CREATE INDEX IF NOT EXISTS idx_company_connections_company ON company_connections(company_id);
     `);
+  }
+
+  private runMigrations() {
+    // Check if profile_image_url column exists in connections table
+    const columnInfo = this.db.prepare(`
+      PRAGMA table_info(connections)
+    `).all() as Array<{name: string}>;
+    const columnExists = columnInfo.some((col) => col.name === 'profile_image_url');
+
+    if (!columnExists) {
+      console.log('Adding profile_image_url column to connections table...');
+      this.db.exec(`
+        ALTER TABLE connections ADD COLUMN profile_image_url TEXT;
+      `);
+    }
+
+    // Check if connection_source column exists
+    const sourceColumnInfo = this.db.prepare(`
+      PRAGMA table_info(connections)
+    `).all() as Array<{name: string}>;
+    const sourceColumnExists = sourceColumnInfo.some((col) => col.name === 'connection_source');
+
+    if (!sourceColumnExists) {
+      console.log('Adding connection_source column to connections table...');
+      this.db.exec(`
+        ALTER TABLE connections ADD COLUMN connection_source TEXT;
+      `);
+    }
   }
 
   // Crawl Session methods
@@ -169,13 +202,13 @@ class DatabaseManager {
     const createdAt = new Date().toISOString();
     
     const stmt = this.db.prepare(`
-      INSERT INTO connections (id, crawl_session_id, name, headline, profile_url, company, company_url,
+      INSERT INTO connections (id, crawl_session_id, name, headline, profile_url, profile_image_url, connection_source, company, company_url,
                               company_logo_url, connection_degree, mutual_connection, location, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(id, connection.crawlSessionId, connection.name, connection.headline, connection.profileUrl,
-             connection.company, connection.companyUrl, connection.companyLogoUrl, connection.connectionDegree,
+             connection.profileImageUrl, connection.connectionSource, connection.company, connection.companyUrl, connection.companyLogoUrl, connection.connectionDegree,
              connection.mutualConnection, connection.location, createdAt);
     
     return id;
@@ -184,7 +217,7 @@ class DatabaseManager {
   getConnectionsBySession(sessionId: string): Connection[] {
     const stmt = this.db.prepare(`
       SELECT id, crawl_session_id as crawlSessionId, name, headline, profile_url as profileUrl,
-             company, company_url as companyUrl, company_logo_url as companyLogoUrl,
+             profile_image_url as profileImageUrl, connection_source as connectionSource, company, company_url as companyUrl, company_logo_url as companyLogoUrl,
              connection_degree as connectionDegree, mutual_connection as mutualConnection,
              location, created_at as createdAt
       FROM connections WHERE crawl_session_id = ?
@@ -240,7 +273,8 @@ class DatabaseManager {
         c.id as companyId, c.name as companyName, c.linkedin_url as companyLinkedInUrl,
         c.logo_url as companyLogoUrl, c.description as companyDescription,
         conn.id as connectionId, conn.name as connectionName, conn.headline as connectionHeadline,
-        conn.profile_url as connectionProfileUrl, conn.connection_degree as connectionDegree
+        conn.profile_url as connectionProfileUrl, conn.profile_image_url as connectionProfileImageUrl, 
+        conn.connection_source as connectionSource, conn.connection_degree as connectionDegree
       FROM company_connections cc
       JOIN companies c ON cc.company_id = c.id
       JOIN connections conn ON cc.connection_id = conn.id

@@ -18,6 +18,8 @@ interface CompanyConnection {
   connectionName: string;
   connectionHeadline?: string;
   connectionProfileUrl?: string;
+  connectionProfileImageUrl?: string;
+  connectionSource?: string;
   connectionDegree: 1 | 2;
 }
 
@@ -220,7 +222,7 @@ export default function ConnectionsList({ selectedSession }: ConnectionsListProp
                         </a>
                       </div>
                       {company.description && (
-                        <p className="text-sm text-gray-600 mt-1 max-w-2xl">{company.description}</p>
+                        <p className="text-sm text-gray-600 mt-1 max-w-2xl leading-relaxed">{company.description}</p>
                       )}
                       <div className="flex items-center gap-1 mt-2">
                         <Building className="h-4 w-4 text-gray-400" />
@@ -233,43 +235,72 @@ export default function ConnectionsList({ selectedSession }: ConnectionsListProp
                 </div>
               </div>
 
-              <div className="divide-y">
-                {companyConnections.map((connection) => (
-                  <div key={connection.id} className="px-6 py-4">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-start space-x-3">
-                        <div className="flex items-center gap-1 mt-0.5">
-                          {getConnectionDegreeIcon(connection.connectionDegree)}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h4 className="font-medium text-gray-900">{connection.connectionName}</h4>
-                            {connection.connectionProfileUrl && (
-                              <a
-                                href={connection.connectionProfileUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-600 hover:text-blue-800 transition-colors"
-                                title="View LinkedIn Profile"
-                              >
-                                <ExternalLink className="h-3 w-3" />
-                              </a>
-                            )}
-                          </div>
-                          {connection.connectionHeadline && (
-                            <p className="text-sm text-gray-600 mt-1">{connection.connectionHeadline}</p>
+              <div className="p-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {companyConnections.map((connection) => (
+                    <div key={connection.id} className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-lg transition-all duration-200 hover:border-blue-300">
+                      <div className="flex flex-col items-center text-center space-y-3">
+                        {/* Large Profile Photo */}
+                        <div className="flex-shrink-0">
+                          {connection.connectionProfileImageUrl ? (
+                            <div className="relative">
+                              <Image
+                                src={connection.connectionProfileImageUrl}
+                                alt={`${connection.connectionName} profile`}
+                                width={80}
+                                height={80}
+                                className="w-20 h-20 rounded-full object-cover border-3 border-gray-200 shadow-sm"
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement;
+                                  const parent = target.parentElement;
+                                  if (parent) {
+                                    parent.innerHTML = `<div class="w-20 h-20 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center text-white font-bold text-lg shadow-sm">${connection.connectionName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}</div>`;
+                                  }
+                                }}
+                              />
+                            </div>
+                          ) : (
+                            <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center text-white font-bold text-lg shadow-sm">
+                              {connection.connectionName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
+                            </div>
                           )}
-                          <p className="text-sm text-blue-600 mt-2 font-medium">
-                            {getConnectionPathDisplay(connection.connectionPath)}
-                          </p>
                         </div>
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {connection.connectionDegree === 1 ? '1st' : '2nd'} degree
+                        
+                        {/* Name */}
+                        <div className="min-w-0 w-full">
+                          <h4 className="font-semibold text-gray-900 text-base leading-tight">
+                            {connection.connectionName}
+                          </h4>
+                        </div>
+                        
+                        {/* Connection Source Badge */}
+                        {connection.connectionSource && (
+                          <div className="w-full">
+                            <span className="inline-block text-xs px-3 py-1 bg-green-100 text-green-800 rounded-full font-medium">
+                              {connection.connectionSource.replace(/\d+\s+(people|person|connection)\s+/i, '').replace(/^(from|at)\s+/i, '').trim()}
+                            </span>
+                          </div>
+                        )}
+                        
+                        {/* LinkedIn Link */}
+                        {connection.connectionProfileUrl && (
+                          <div className="w-full">
+                            <a
+                              href={connection.connectionProfileUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 transition-colors text-sm font-medium hover:underline"
+                              title="View LinkedIn Profile"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              View Profile
+                            </a>
+                          </div>
+                        )}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           ))}

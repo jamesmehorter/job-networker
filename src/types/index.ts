@@ -24,6 +24,8 @@ export interface Connection {
   name: string;
   headline: string;
   profileUrl: string;
+  profileImageUrl?: string;
+  connectionSource?: string;
   company?: string;
   companyUrl?: string;
   companyLogoUrl?: string;

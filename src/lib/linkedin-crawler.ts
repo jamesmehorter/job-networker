@@ -159,7 +159,12 @@ export class LinkedInCrawler {
       let processedCount = 0;
       for (const company of companies) {
         console.log(`Processing company ${processedCount + 1}/${companies.length}: ${company.name}`);
-        await this.processCompanyConnections(sessionId, company);
+        
+        // First, process any connection summary links to get actual individual profiles
+        const processedCompany = await this.processConnectionSummaryLinks(company);
+        
+        // Then process the company connections as usual
+        await this.processCompanyConnections(sessionId, processedCompany);
         processedCount++;
         
         const progress = 60 + (processedCount / Math.max(companies.length, 1)) * 35;
@@ -233,7 +238,7 @@ export class LinkedInCrawler {
     }
   }
 
-  private async extractCompaniesFromSearch(): Promise<Array<Company & { connectionInfo: string }>> {
+  private async extractCompaniesFromSearch(): Promise<Array<Company & { connectionInfo: string; connectionNames: Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}> }>> {
     if (!this.page) return [];
 
     // Add debugging to see what's on the page
@@ -250,11 +255,12 @@ export class LinkedInCrawler {
     console.log('Current URL from Node.js:', currentUrl);
 
     const result = await this.page.evaluate(() => {
-      const companies: Array<Company & { connectionInfo: string }> = [];
+      const companies: Array<Company & { connectionInfo: string; connectionNames: Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}> }> = [];
       const debugInfo = {
         usedSelector: '',
         selectorResults: [] as Array<{ selector: string; count: number }>,
-        pageTitle: document.title
+        pageTitle: document.title,
+        cardDebugInfo: [] as Array<{ cardIndex: number; htmlSample: string; strategies: string; finalResult: string; connectionDebug?: { connectionInfo: string; connectionNamesFound: number; connectionNames: string[]; connectionLinks: string[] } }>
       };
       
       // Try multiple selector strategies as LinkedIn changes their HTML frequently
@@ -304,25 +310,46 @@ export class LinkedInCrawler {
           let nameElement: Element | null = null;
           let linkElement: HTMLAnchorElement | null = null;
           
-          // Debug: Log what we're working with
+          // Debug: Track what we're working with
           const cardHTML = card.outerHTML.substring(0, 200);
-          console.log(`\n--- Card ${cardIndex + 1} ---`);
-          console.log(`Card HTML sample: ${cardHTML}...`);
+          let strategyLog = '';
 
           // Strategy 1: Original approach
           nameElement = card.querySelector('a[data-test-app-aware-link] span[aria-hidden="true"]');
           linkElement = card.querySelector('a[data-test-app-aware-link]') as HTMLAnchorElement;
+          strategyLog += `S1: ${nameElement ? 'name✓' : 'name✗'} ${linkElement ? 'link✓' : 'link✗'}; `;
 
           // Strategy 2: More generic approach
           if (!nameElement || !linkElement) {
             const allLinks = Array.from(card.querySelectorAll('a'));
+            let s2Found = false;
             for (const link of allLinks) {
               if (link.href?.includes('/company/')) {
                 linkElement = link as HTMLAnchorElement;
-                nameElement = link.querySelector('span') || link;
+                
+                // Try multiple approaches to find the company name
+                const possibleNameElements = [
+                  link.querySelector('span[aria-hidden="true"]'),
+                  link.querySelector('span:not([aria-hidden="false"])'),
+                  link.querySelector('.entity-result__title-text span'),
+                  link.querySelector('span'),
+                  link.querySelector('*'),
+                  link
+                ];
+                
+                for (const elem of possibleNameElements) {
+                  const text = elem?.textContent?.trim();
+                  if (text && text.length > 0) {
+                    nameElement = elem;
+                    break;
+                  }
+                }
+                
+                s2Found = true;
                 break;
               }
             }
+            strategyLog += `S2: ${s2Found ? 'found' : 'not-found'}; `;
           }
 
           // Strategy 3: Look for any link with company-like text
@@ -365,7 +392,42 @@ export class LinkedInCrawler {
             }
           }
 
-          // Strategy 5: Even more generic - find any meaningful link
+          // Strategy 5: Look for company name outside the link but within the card
+          if (!nameElement || !linkElement) {
+            // Find any company link first
+            const companyLink = Array.from(card.querySelectorAll('a[href]')).find(link => 
+              (link as HTMLAnchorElement).href?.includes('/company/')) as HTMLAnchorElement;
+              
+            if (companyLink) {
+              linkElement = companyLink;
+              
+              // Look for company name in various places within the card
+              const possibleNameElements = [
+                // Look for headings near the link
+                card.querySelector('h3'),
+                card.querySelector('h4'),
+                card.querySelector('[data-test-result-title]'),
+                // Look for spans with visible text 
+                ...Array.from(card.querySelectorAll('span')).filter(span => {
+                  const text = span.textContent?.trim();
+                  return text && text.length > 2 && text.length < 100;
+                }),
+                // Look for the link's direct text content
+                companyLink
+              ];
+              
+              for (const elem of possibleNameElements) {
+                const text = elem?.textContent?.trim();
+                if (text && text.length > 0 && !text.includes('•') && !text.includes('connection')) {
+                  nameElement = elem;
+                  break;
+                }
+              }
+            }
+            strategyLog += `S5: ${linkElement ? 'link-found' : 'no-link'}${nameElement ? '+name' : '+no-name'}; `;
+          }
+          
+          // Strategy 6: Even more generic - find any meaningful link
           if (!nameElement || !linkElement) {
             const allLinks = Array.from(card.querySelectorAll('a[href]')) as HTMLAnchorElement[];
             for (const link of allLinks) {
@@ -378,24 +440,179 @@ export class LinkedInCrawler {
             }
           }
 
-          console.log(`Strategy results: nameElement=${nameElement?.tagName}, linkElement=${linkElement?.href}`);
+          // Extract basic company info if we found elements
+          const name = nameElement?.textContent?.trim() || '';
+          const linkedinUrl = linkElement?.href || '';
+          
+          // Extract other information with fallback selectors  
+          const logoElement = card.querySelector('img') as HTMLImageElement;
+          const logoUrl = logoElement?.src || '';
+          let description = '';
+          let connectionInfo = '';
+          const connectionNames: Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}> = [];
           
           if (nameElement && linkElement) {
-            const name = nameElement.textContent?.trim() || '';
-            const linkedinUrl = linkElement.href;
-            
-            console.log(`✅ Extracted: "${name}" -> ${linkedinUrl}`);
-            
-            // Extract other information with fallback selectors
-            const logoElement = card.querySelector('img') as HTMLImageElement;
-            const descriptionElement = card.querySelector('[data-test-entity-subtitle], .entity-result__summary, .search-result__info .subline-level-1');
-            const connectionElement = card.querySelector('[data-test-entity-context], .entity-result__context, .search-result__info .subline-level-2');
+            // Try multiple selectors for company description
+            const descriptionSelectors = [
+              '[data-test-entity-subtitle]',
+              '.entity-result__summary', 
+              '.search-result__info .subline-level-1',
+              '.t-14', // Common LinkedIn text class
+              '.t-black--light',
+              'p', // Generic paragraph
+              '.entity-result__content p'
+            ];
+            let descriptionElement: Element | null = null;
+            for (const selector of descriptionSelectors) {
+              descriptionElement = card.querySelector(selector);
+              if (descriptionElement?.textContent?.trim() && descriptionElement.textContent.length > 10) {
+                break;
+              }
+            }
 
-            const logoUrl = logoElement?.src || '';
-            const description = descriptionElement?.textContent?.trim() || '';
-            const connectionInfo = connectionElement?.textContent?.trim() || '';
+            // Try multiple selectors for connection information - look for text like "John Smith works here" or "2 connections work here"
+            const connectionSelectors = [
+              '[data-test-entity-context]',
+              '.entity-result__context', 
+              '.search-result__info .subline-level-2',
+              '.entity-result__content .t-12',
+              '.entity-result__content .t-black--light',
+              '.t-12', // Small text often contains connection info
+              '.t-black--light',
+              'span[aria-hidden="false"]', // Sometimes connection info is in these spans
+              '.entity-result__content span:not([aria-hidden="true"])'
+            ];
+            const allConnectionTexts: string[] = [];
+            
+            // Collect all potential connection text
+            for (const selector of connectionSelectors) {
+              const elements = card.querySelectorAll(selector);
+              elements.forEach(elem => {
+                const text = elem.textContent?.trim();
+                if (text && text.length > 5 && (
+                  text.includes('connection') || 
+                  text.includes('works here') || 
+                  text.includes('work here') ||
+                  text.includes('hired here') ||
+                  text.includes('from your') ||
+                  text.includes('people you may know') ||
+                  /\d+ (person|people)/.test(text)
+                )) {
+                  allConnectionTexts.push(text);
+                }
+              });
+            }
+            
+            // Use the most relevant connection text
+            connectionInfo = allConnectionTexts.length > 0 ? allConnectionTexts[0] : '';
+            
+            // Look for connection summary links that lead to detailed connection pages
+            // These are links like "3 people from your school were hired here" or "2 connections work here"
+            const connectionSummaryLinks = Array.from(card.querySelectorAll('a[href]')).filter(link => {
+              const text = link.textContent?.trim().toLowerCase() || '';
+              const href = (link as HTMLAnchorElement).href || '';
+              
+              // Look for connection summary links - these contain connection counts and lead to people search pages
+              return (
+                (text.includes('connection') && (text.includes('work') || text.includes('hire'))) ||
+                (text.includes('people') && (text.includes('work') || text.includes('hire') || text.includes('from'))) ||
+                (/\d+\s+(people|person|connection)/.test(text) && (text.includes('work') || text.includes('hire') || text.includes('from')))
+              ) && href.includes('linkedin.com/search/results/people');
+            }) as HTMLAnchorElement[];
+            
+            // Store connection summary links for later processing
+            for (const link of connectionSummaryLinks) {
+              const connectionText = link.textContent?.trim() || '';
+              const connectionUrl = link.href;
+              
+              // We'll store the connection summary info to process later
+              connectionNames.push({
+                name: connectionText, // This will be replaced with actual names later
+                profileUrl: connectionUrl, // This is the link to the connection search page
+                profileImageUrl: undefined,
+                isConnectionSummary: true // Flag to indicate this needs further processing
+              });
+            }
+            
+            // Try to extract specific names from connection info text
+            if (connectionNames.length === 0 && connectionInfo) {
+              // Look for specific person names in various patterns
+              const namePatterns = [
+                // "John Smith works here"
+                /^([A-Z][a-z]+ [A-Z][a-z]+)(?: and \d+ others?)? works? here/i,
+                // "Jane Doe and 2 others were hired here"  
+                /^([A-Z][a-z]+ [A-Z][a-z]+)(?: and \d+ others?)? were hired here/i,
+                // "John Smith from your network"
+                /^([A-Z][a-z]+ [A-Z][a-z]+) from your/i,
+                // Look for names anywhere in the text that match person name patterns
+                /([A-Z][a-z]+ [A-Z][a-z]+)(?:\s+(?:and|works|were|from))/i
+              ];
+              
+              for (const pattern of namePatterns) {
+                const match = connectionInfo.match(pattern);
+                if (match && match[1]) {
+                  // Validate the name doesn't look like company or generic text
+                  const possibleName = match[1].trim();
+                  if (!possibleName.toLowerCase().includes('connection') && 
+                      !possibleName.toLowerCase().includes('company') &&
+                      !possibleName.toLowerCase().includes('people')) {
+                    connectionNames.push({
+                      name: possibleName,
+                      profileUrl: '',
+                      profileImageUrl: undefined,
+                      isConnectionSummary: false,
+                      connectionSource: undefined
+                    });
+                    break;
+                  }
+                }
+              }
+            }
 
-            if (name && linkedinUrl && linkedinUrl.includes('linkedin.com')) {
+            description = descriptionElement?.textContent?.trim() || '';
+            
+            // Clean up duplicate company names and repetitive text in description
+            if (description && name) {
+              // Remove duplicate company names
+              description = description.replace(new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'i'), '');
+              description = description.replace(new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i'), '');
+              
+              // Remove duplicate phrases
+              const phrases = description.split('•').map(p => p.trim()).filter(p => p.length > 0);
+              const uniquePhrases = Array.from(new Set(phrases));
+              description = uniquePhrases.join(' • ');
+              
+              // Clean up extra whitespace
+              description = description.replace(/\s+/g, ' ').trim();
+              
+              // Limit length to avoid overly long descriptions
+              if (description.length > 200) {
+                description = description.substring(0, 200) + '...';
+              }
+            }
+
+            const finalResult = nameElement && linkElement 
+              ? `SUCCESS: "${name}" -> ${linkedinUrl}`
+              : 'FAILED: No valid extraction';
+            
+            // Add debugging for connection extraction  
+            const connectionDebug = {
+              connectionInfo,
+              connectionNamesFound: connectionNames.length,
+              connectionNames: connectionNames.map(c => c.name),
+              connectionLinks: connectionNames.map(c => c.profileUrl)
+            };
+              
+            debugInfo.cardDebugInfo.push({
+              cardIndex: cardIndex + 1,
+              htmlSample: cardHTML,
+              strategies: strategyLog,
+              finalResult,
+              connectionDebug
+            });
+
+            // Only add if we have a valid company name and LinkedIn URL
+            if (name && name.length > 1 && linkedinUrl && linkedinUrl.includes('linkedin.com/company/')) {
               companies.push({
                 id: '',
                 name,
@@ -403,11 +620,10 @@ export class LinkedInCrawler {
                 logoUrl,
                 description,
                 createdAt: '',
-                connectionInfo
-              });
+                connectionInfo,
+                connectionNames // Add the extracted connection names and profile links
+              } as Company & { connectionInfo: string; connectionNames: Array<{name: string, profileUrl: string}> });
             }
-          } else {
-            console.log(`❌ No valid extraction for Card ${cardIndex + 1}`);
           }
         } catch {
           // Silently continue if extraction fails for this card
@@ -427,6 +643,25 @@ export class LinkedInCrawler {
     if (result.debugInfo.usedSelector) {
       console.log(`✅ Successfully used selector: "${result.debugInfo.usedSelector}"`);
       console.log(`✅ Found ${result.companies.length} companies`);
+      
+      // Show detailed card extraction results
+      if (result.debugInfo.cardDebugInfo.length > 0) {
+        console.log(`\n--- CARD EXTRACTION DETAILS ---`);
+        result.debugInfo.cardDebugInfo.forEach(card => {
+          console.log(`Card ${card.cardIndex}:`);
+          console.log(`  HTML: ${card.htmlSample}...`);
+          console.log(`  Strategies: ${card.strategies}`);
+          console.log(`  Result: ${card.finalResult}`);
+          if (card.connectionDebug) {
+            console.log(`  Connection Info: "${card.connectionDebug.connectionInfo}"`);
+            console.log(`  Names Found: ${card.connectionDebug.connectionNamesFound}`);
+            if (card.connectionDebug.connectionNames.length > 0) {
+              console.log(`  Connection Names: ${card.connectionDebug.connectionNames.join(', ')}`);
+            }
+          }
+          console.log(``);
+        });
+      }
     } else {
       console.log(`❌ No working selector found!`);
       
@@ -478,7 +713,190 @@ export class LinkedInCrawler {
     });
   }
 
-  private async processCompanyConnections(sessionId: string, company: Company & { connectionInfo: string }): Promise<void> {
+  private async processConnectionSummaryLinks(company: Company & { connectionInfo: string; connectionNames: Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}> }): Promise<Company & { connectionInfo: string; connectionNames: Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}> }> {
+    console.log(`Processing connection summary links for ${company.name}`);
+    
+    const processedConnectionNames: Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}> = [];
+    
+    for (const connection of company.connectionNames) {
+      if (connection.isConnectionSummary && connection.profileUrl.includes('linkedin.com/search/results/people')) {
+        console.log(`Following connection link: ${connection.name}`);
+        console.log(`URL: ${connection.profileUrl}`);
+        
+        try {
+          // Navigate to the connection details page
+          const individualConnections = await this.extractIndividualConnections(connection.profileUrl, connection.name);
+          
+          // Add all individual connections found
+          processedConnectionNames.push(...individualConnections);
+          
+          // Add a small delay between requests
+          await this.wait(2000);
+        } catch (error) {
+          console.warn(`Failed to process connection link ${connection.profileUrl}:`, error);
+          // Keep the original summary if we can't process the details
+          processedConnectionNames.push(connection);
+        }
+      } else {
+        // Keep non-summary connections as-is
+        processedConnectionNames.push(connection);
+      }
+    }
+    
+    return {
+      ...company,
+      connectionNames: processedConnectionNames
+    };
+  }
+
+  private async extractIndividualConnections(connectionUrl: string, connectionSource: string): Promise<Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}>> {
+    if (!this.page) return [];
+
+    try {
+      console.log(`Navigating to connection details: ${connectionUrl}`);
+      await this.page.goto(connectionUrl, { waitUntil: 'domcontentloaded' });
+      await this.wait(3000);
+
+      // Scroll to load more connections
+      await this.scrollToLoadResults();
+
+      const connections = await this.page.evaluate((source) => {
+        const foundConnections: Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}> = [];
+        
+        // Look for connection cards in the people search results
+        const possibleSelectors = [
+          '.reusable-search__result-container',
+          '[data-test-result-container]',
+          '.entity-result',
+          '.search-result__wrapper',
+          '[data-chameleon-result-urn]'
+        ];
+
+        let connectionCards: NodeListOf<Element> | null = null;
+        
+        for (const selector of possibleSelectors) {
+          const elements = document.querySelectorAll(selector);
+          if (elements.length > 0) {
+            connectionCards = elements;
+            console.log(`Using selector: ${selector}, found ${elements.length} cards`);
+            break;
+          }
+        }
+
+        if (!connectionCards || connectionCards.length === 0) {
+          console.log('No connection cards found on the page');
+          return foundConnections;
+        }
+
+        connectionCards.forEach((card, index) => {
+          try {
+            // Debug: Log what we're working with
+            const cardText = card.textContent?.slice(0, 200) || '';
+            console.log(`Processing connection card ${index + 1}: ${cardText}...`);
+            
+            // Look for profile links
+            const profileLinks = Array.from(card.querySelectorAll('a[href*="/in/"]')) as HTMLAnchorElement[];
+            console.log(`Found ${profileLinks.length} profile links in card ${index + 1}`);
+            
+            for (const link of profileLinks) {
+              // Try multiple strategies to find the person's name
+              let nameText = '';
+              
+              // Strategy 1: Look for name in specific LinkedIn selectors
+              const nameSelectors = [
+                'span[aria-hidden="true"]',
+                '.entity-result__title-text span',
+                '.actor-name',
+                '.search-result__result-text h3 span',
+                'h3 > span',
+                '.result-lockup__name',
+                '[data-anonymize="person-name"]'
+              ];
+              
+              for (const selector of nameSelectors) {
+                const nameElement = link.querySelector(selector);
+                const text = nameElement?.textContent?.trim();
+                console.log(`Selector "${selector}": "${text}"`);
+                if (text && text.length > 3 && /^[A-Z][a-z]+\s+[A-Z]/.test(text)) {
+                  nameText = text;
+                  console.log(`Found name with selector "${selector}": "${nameText}"`);
+                  break;
+                }
+              }
+              
+              // Strategy 2: If no name found in selectors, look at the link text itself
+              if (!nameText) {
+                const linkText = link.textContent?.trim();
+                if (linkText && /^[A-Z][a-z]+\s+[A-Z][a-z]/.test(linkText)) {
+                  nameText = linkText;
+                }
+              }
+              
+              // Validate this looks like a person's name and filter out unwanted text
+              if (nameText && 
+                  nameText.length > 3 && 
+                  nameText.length < 80 &&
+                  /^[A-Z][a-z]+(\s+[A-Z][a-z]*){1,3}$/.test(nameText) && // Must be proper name format (First Last, etc.)
+                  !nameText.toLowerCase().includes('linkedin') &&
+                  !nameText.toLowerCase().includes('view') &&
+                  !nameText.toLowerCase().includes('see') &&
+                  !nameText.toLowerCase().includes('profile') &&
+                  !nameText.toLowerCase().includes('status') &&
+                  !nameText.toLowerCase().includes('offline') &&
+                  !nameText.toLowerCase().includes('online') &&
+                  !nameText.toLowerCase().includes('connection') &&
+                  !nameText.toLowerCase().includes('work') &&
+                  !nameText.toLowerCase().includes('company') &&
+                  !nameText.toLowerCase().includes('here') &&
+                  !/^\d+/.test(nameText) && // Doesn't start with a number
+                  link.href.includes('/in/')) {
+                
+                // Look for profile image
+                let profileImageUrl: string | undefined;
+                const images = Array.from(card.querySelectorAll('img')) as HTMLImageElement[];
+                
+                for (const img of images) {
+                  const src = img.src;
+                  if (src && (
+                    src.includes('profile-displayphoto') || 
+                    src.includes('person/') || 
+                    src.includes('ghostman') ||
+                    (src.includes('media') && src.includes('linkedin'))
+                  )) {
+                    profileImageUrl = src;
+                    break;
+                  }
+                }
+                
+                foundConnections.push({
+                  name: nameText,
+                  profileUrl: link.href,
+                  profileImageUrl,
+                  isConnectionSummary: false,
+                  connectionSource: source
+                });
+                
+                // Only take the first valid profile link per card
+                break;
+              }
+            }
+          } catch (error) {
+            console.log(`Error processing connection card ${index}:`, error);
+          }
+        });
+
+        console.log(`Extracted ${foundConnections.length} individual connections`);
+        return foundConnections;
+      }, connectionSource);
+
+      return connections;
+    } catch (error) {
+      console.error(`Failed to extract individual connections from ${connectionUrl}:`, error);
+      return [];
+    }
+  }
+
+  private async processCompanyConnections(sessionId: string, company: Company & { connectionInfo: string; connectionNames: Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}> }): Promise<void> {
     console.log(`Processing company: ${company.name} (${company.linkedinUrl})`);
     console.log(`Connection info: "${company.connectionInfo}"`);
     
@@ -501,42 +919,179 @@ export class LinkedInCrawler {
         console.log(`Created company with ID: ${companyId}`);
       }
 
-      // Extract connection name from connectionInfo if possible
-      let connectionName = 'Direct Connection';
-      if (company.connectionInfo) {
-        // Try to parse connection info like "John Smith works here" or "2 connections work here"
-        const nameMatch = company.connectionInfo.match(/^([^•]+?)(?:\s+(?:works?|work)\s+here|•|$)/i);
-        if (nameMatch && nameMatch[1] && !nameMatch[1].includes('connection')) {
-          connectionName = nameMatch[1].trim();
+      // If no specific connection names were found, try to visit the company page to find actual names
+      if ((!company.connectionNames || company.connectionNames.length === 0) && 
+          company.connectionInfo.match(/\d+\s+connections?\s+work here/i)) {
+        console.log(`Attempting to find actual connection names for ${company.name}`);
+        const actualConnections = await this.extractConnectionsFromCompanyPage(company.linkedinUrl);
+        if (actualConnections.length > 0) {
+          company.connectionNames = actualConnections;
+          console.log(`Found ${actualConnections.length} actual connection names from company page`);
         }
       }
-      
-      console.log(`Creating connection record: ${connectionName}`);
 
-      // Create a connection record based on the search result
-      const connectionId = this.db.createConnection({
-        crawlSessionId: sessionId,
-        name: connectionName,
-        headline: company.connectionInfo,
-        profileUrl: '', // We don't have individual profile URLs from company search
-        connectionDegree: 1,
-        company: company.name,
-        companyUrl: company.linkedinUrl
-      });
-      console.log(`Created connection with ID: ${connectionId}`);
+      // Create connections based on what we extracted from the search results
+      if (company.connectionNames && company.connectionNames.length > 0) {
+        console.log(`Found ${company.connectionNames.length} named connections for ${company.name}`);
+        
+        // Create connection records for each named person
+        for (const connection of company.connectionNames) {
+          const connectionId = this.db.createConnection({
+            crawlSessionId: sessionId,
+            name: connection.name,
+            headline: company.connectionInfo, // Use the connection info as headline
+            profileUrl: connection.profileUrl,
+            profileImageUrl: connection.profileImageUrl,
+            connectionSource: connection.connectionSource,
+            connectionDegree: 1,
+            company: company.name,
+            companyUrl: company.linkedinUrl
+          });
+          
+          // Link the company and connection
+          this.db.createCompanyConnection({
+            companyId,
+            connectionId,
+            crawlSessionId: sessionId,
+            connectionPath: `You -> ${connection.name}`
+          });
+          
+          console.log(`Created named connection: ${connection.name} -> ${connection.profileUrl}`);
+        }
+      } else {
+        // Fallback: Create a meaningful connection record from the connection info
+        console.log(`Creating fallback connection from info: "${company.connectionInfo}"`);
+        
+        let connectionName: string;
+        let headline: string;
+        
+        if (company.connectionInfo.includes('connection') || company.connectionInfo.includes('people')) {
+          // Extract meaningful connection info from patterns like "4 connections work here"
+          const numericMatch = company.connectionInfo.match(/(\d+)\s+(connections?|people)/i);
+          if (numericMatch) {
+            const count = parseInt(numericMatch[1]);
+            if (count === 1) {
+              connectionName = '1st Degree Connection';
+            } else {
+              connectionName = `${count} Connections`;
+            }
+          } else {
+            // Fallback for other patterns
+            connectionName = company.connectionInfo
+              .replace(/\s+(work here|were hired here).*$/i, '')
+              .replace(/^\d+\s+/, '') // Remove leading numbers
+              .trim();
+            
+            // If still looks generic, make it more meaningful
+            if (connectionName.toLowerCase().includes('connection')) {
+              connectionName = 'Your Network Connection';
+            } else if (connectionName.toLowerCase().includes('people')) {
+              connectionName = 'Network Contact';
+            }
+          }
+          headline = company.connectionInfo;
+        } else {
+          // For specific names if found
+          const nameMatch = company.connectionInfo.match(/^([A-Z][a-z]+ [A-Z][a-z]+)/);
+          connectionName = nameMatch ? nameMatch[1] : 'Network Connection';
+          headline = company.connectionInfo;
+        }
+        
+        // Create a connection record based on the search result
+        const connectionId = this.db.createConnection({
+          crawlSessionId: sessionId,
+          name: connectionName,
+          headline: headline,
+          profileUrl: '',
+          profileImageUrl: undefined,
+          connectionSource: undefined,
+          connectionDegree: 1,
+          company: company.name,
+          companyUrl: company.linkedinUrl
+        });
 
-      // Link the company and connection
-      const companyConnectionId = this.db.createCompanyConnection({
-        companyId,
-        connectionId,
-        crawlSessionId: sessionId,
-        connectionPath: `You -> ${connectionName} works here`
-      });
-      console.log(`Created company-connection link with ID: ${companyConnectionId}`);
+        // Link the company and connection
+        this.db.createCompanyConnection({
+          companyId,
+          connectionId,
+          crawlSessionId: sessionId,
+          connectionPath: `You -> ${connectionName}`
+        });
+        
+        console.log(`Created connection: "${connectionName}" with headline: "${headline}"`);
+      }
       
     } catch (error) {
       console.error(`Error processing company connections for ${company.name}:`, error);
       throw error;
+    }
+  }
+
+
+  private async extractConnectionsFromCompanyPage(companyUrl: string): Promise<Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}>> {
+    if (!this.page) return [];
+
+    try {
+      // Navigate to the company page
+      console.log(`Navigating to company page: ${companyUrl}`);
+      await this.page.goto(companyUrl, { waitUntil: 'domcontentloaded' });
+      await this.wait(3000);
+
+      // Look for a "People" or "Employees" section that might show connections
+      const connections = await this.page.evaluate(() => {
+        const foundConnections: Array<{name: string, profileUrl: string, profileImageUrl?: string, isConnectionSummary?: boolean, connectionSource?: string}> = [];
+
+        // Try to find employee/people sections (could be used for future enhancement)
+        // const peopleSelectors = [
+        //   '[data-test-id="people-card"]',
+        //   '.org-people-bar-graph-element__bar',
+        //   '.org-people-details-module__card-spacing',
+        //   '.artdeco-card .org-people-bar-graph-element',
+        //   '.org-page-navigation__item-anchor[href*="people"]', // People tab
+        // ];
+
+        // First try to find a "People" tab and click it
+        const peopleTab = document.querySelector('.org-page-navigation__item-anchor[href*="people"]') as HTMLAnchorElement;
+        if (peopleTab) {
+          console.log('Found people tab, would need to navigate');
+          // We could navigate here but it adds complexity
+        }
+
+        // Look for any profile links in employee sections
+        const profileLinks = Array.from(document.querySelectorAll('a[href*="/in/"]')) as HTMLAnchorElement[];
+        
+        for (const link of profileLinks) {
+          const nameText = link.textContent?.trim();
+          // Validate this looks like an actual person name
+          if (nameText && 
+              nameText.length > 5 && 
+              nameText.length < 60 &&
+              /^[A-Z][a-z]+ [A-Z][a-z]/.test(nameText) && // Name pattern
+              !nameText.toLowerCase().includes('company') &&
+              !nameText.toLowerCase().includes('follow') &&
+              !nameText.toLowerCase().includes('connect') &&
+              !nameText.toLowerCase().includes('view') &&
+              link.href.includes('/in/')) {
+            
+            foundConnections.push({
+              name: nameText,
+              profileUrl: link.href,
+              profileImageUrl: undefined,
+              isConnectionSummary: false,
+              connectionSource: undefined
+            });
+          }
+        }
+
+        return foundConnections;
+      });
+
+      console.log(`Found ${connections.length} connections on company page`);
+      return connections.slice(0, 5); // Limit to first 5 to avoid overwhelming
+      
+    } catch (error) {
+      console.warn(`Failed to extract connections from company page: ${error}`);
+      return [];
     }
   }
 
@@ -582,6 +1137,8 @@ export class LinkedInCrawler {
           name: connection.name,
           headline: connection.headline,
           profileUrl: connection.profileUrl,
+          profileImageUrl: undefined,
+          connectionSource: undefined,
           connectionDegree: 1,
           company: companyInfo.name,
           companyUrl: companyInfo.linkedinUrl
